@@ -1,27 +1,3 @@
-const GEM_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="28" height="28">
-  <defs>
-    <linearGradient id="gem-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#a855f7"/>
-      <stop offset="50%" style="stop-color:#6366f1"/>
-      <stop offset="100%" style="stop-color:#3b82f6"/>
-    </linearGradient>
-  </defs>
-  <polygon points="24,4 38,16 10,16" fill="#c084fc" opacity="0.9"/>
-  <polygon points="10,16 24,44 4,20" fill="#818cf8" opacity="0.85"/>
-  <polygon points="38,16 24,44 44,20" fill="#7c3aed" opacity="0.85"/>
-  <polygon points="10,16 38,16 24,44" fill="url(#gem-grad)" opacity="0.95"/>
-  <polygon points="20,10 28,10 24,18" fill="white" opacity="0.3"/>
-</svg>`
-
-const GEM_DISABLED_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="28" height="28">
-  <polygon points="24,4 38,16 10,16" fill="#64748b" opacity="0.5"/>
-  <polygon points="10,16 24,44 4,20" fill="#475569" opacity="0.5"/>
-  <polygon points="38,16 24,44 44,20" fill="#475569" opacity="0.5"/>
-  <polygon points="10,16 38,16 24,44" fill="#334155" opacity="0.6"/>
-  <polygon points="20,10 28,10 24,18" fill="white" opacity="0.15"/>
-  <line x1="8" y1="8" x2="40" y2="40" stroke="#ef4444" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
-</svg>`
-
 const PROGRESS_SIZE = 36
 const PROGRESS_RADIUS = 14
 const PROGRESS_CIRCUMFERENCE = 2 * Math.PI * PROGRESS_RADIUS
@@ -45,7 +21,7 @@ function createProgressRing(): SVGSVGElement {
   bgCircle.setAttribute('cy', String(PROGRESS_SIZE / 2))
   bgCircle.setAttribute('r', String(PROGRESS_RADIUS))
   bgCircle.setAttribute('fill', 'none')
-  bgCircle.setAttribute('stroke', 'rgba(139, 92, 246, 0.15)')
+  bgCircle.setAttribute('stroke', 'rgba(20, 184, 166, 0.18)')
   bgCircle.setAttribute('stroke-width', '3')
   svg.appendChild(bgCircle)
 
@@ -55,7 +31,7 @@ function createProgressRing(): SVGSVGElement {
   circle.setAttribute('cy', String(PROGRESS_SIZE / 2))
   circle.setAttribute('r', String(PROGRESS_RADIUS))
   circle.setAttribute('fill', 'none')
-  circle.setAttribute('stroke', '#a855f7')
+  circle.setAttribute('stroke', '#14b8a6')
   circle.setAttribute('stroke-width', '3')
   circle.setAttribute('stroke-linecap', 'round')
   circle.setAttribute('stroke-dasharray', String(PROGRESS_CIRCUMFERENCE))
@@ -69,8 +45,8 @@ function createProgressRing(): SVGSVGElement {
 
 export function createGemIcon(onClick: () => void): HTMLElement {
   const container = document.createElement('div')
-  container.id = 'gemma-gem-icon'
-  container.title = 'Gemma Gem'
+  container.id = 'alkahest-browser-companion-icon'
+  container.title = 'Alkahest Browser Companion'
 
   Object.assign(container.style, {
     position: 'fixed',
@@ -83,24 +59,25 @@ export function createGemIcon(onClick: () => void): HTMLElement {
     borderRadius: '50%',
     background: 'rgba(15, 15, 25, 0.85)',
     backdropFilter: 'blur(8px)',
-    boxShadow: '0 2px 12px rgba(139, 92, 246, 0.3)',
+    boxShadow: '0 2px 12px rgba(20, 184, 166, 0.35)',
     transition: 'transform 0.2s, box-shadow 0.2s',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
   })
 
-  // Gem SVG centered
-  const gemWrapper = document.createElement('div')
-  gemWrapper.innerHTML = GEM_SVG
-  Object.assign(gemWrapper.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+  const mascot = document.createElement('img')
+  mascot.src = browser.runtime.getURL('mascot/alkahest-f-chibi.png' as any)
+  mascot.alt = ''
+  Object.assign(mascot.style, {
+    width: '32px',
+    height: '32px',
+    borderRadius: '50%',
+    objectFit: 'cover',
     position: 'relative',
     zIndex: '1',
   })
-  container.appendChild(gemWrapper)
+  container.appendChild(mascot)
 
   // Progress ring overlay
   const progressRing = createProgressRing()
@@ -108,12 +85,12 @@ export function createGemIcon(onClick: () => void): HTMLElement {
 
   container.addEventListener('mouseenter', () => {
     container.style.transform = 'scale(1.1)'
-    container.style.boxShadow = '0 4px 20px rgba(139, 92, 246, 0.5)'
+    container.style.boxShadow = '0 4px 20px rgba(244, 3, 49, 0.42)'
   })
 
   container.addEventListener('mouseleave', () => {
     container.style.transform = 'scale(1)'
-    container.style.boxShadow = '0 2px 12px rgba(139, 92, 246, 0.3)'
+    container.style.boxShadow = '0 2px 12px rgba(20, 184, 166, 0.35)'
   })
 
   container.addEventListener('click', onClick)
@@ -122,23 +99,23 @@ export function createGemIcon(onClick: () => void): HTMLElement {
 }
 
 export function setGemDisabled(disabled: boolean): void {
-  const container = document.getElementById('gemma-gem-icon')
+  const container = document.getElementById('alkahest-browser-companion-icon')
   if (!container) return
 
-  const gemWrapper = container.querySelector('div')
-  if (gemWrapper) {
-    gemWrapper.innerHTML = disabled ? GEM_DISABLED_SVG : GEM_SVG
+  const mascot = container.querySelector('img')
+  if (mascot) {
+    mascot.style.filter = disabled ? 'grayscale(1) opacity(0.5)' : 'none'
   }
 
-  container.title = disabled ? 'Gemma Gem (disabled on this site)' : 'Gemma Gem'
+  container.title = disabled ? 'Alkahest Browser Companion (disabled on this site)' : 'Alkahest Browser Companion'
   container.style.boxShadow = disabled
     ? '0 2px 12px rgba(100, 116, 139, 0.2)'
-    : '0 2px 12px rgba(139, 92, 246, 0.3)'
+    : '0 2px 12px rgba(20, 184, 166, 0.35)'
 }
 
 /** Update progress ring: 0-100, or -1 to hide */
 export function updateGemProgress(progress: number): void {
-  const arc = document.getElementById('gemma-gem-icon')?.querySelector('#gem-progress-arc') as SVGCircleElement | null
+  const arc = document.getElementById('alkahest-browser-companion-icon')?.querySelector('#gem-progress-arc') as SVGCircleElement | null
   if (!arc) return
 
   const svg = arc.parentElement as SVGSVGElement | null

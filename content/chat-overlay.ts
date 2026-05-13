@@ -1,16 +1,43 @@
 import { marked } from 'marked'
 import { MODELS, DEFAULT_MODEL_ID, type ModelId } from '@/shared/models'
+import type { ModelInfoMessage, VoiceAsrProvider, VoiceTtsProvider } from '@/shared/messages'
 
 marked.setOptions({ breaks: true })
 
 export interface ChatSettings {
   thinking: boolean
   maxIterations: number
+  experimentalMtp: boolean
+  showScreenMascot: boolean
+  voice: {
+    asrProvider: VoiceAsrProvider
+    speakResponses: boolean
+    ttsProvider: VoiceTtsProvider
+  }
 }
 
 const DEFAULT_SETTINGS: ChatSettings = {
-  thinking: true,
+  thinking: false,
   maxIterations: 10,
+  experimentalMtp: false,
+  showScreenMascot: true,
+  voice: {
+    asrProvider: 'off',
+    speakResponses: false,
+    ttsProvider: 'off',
+  },
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
 const STYLES = `
@@ -25,9 +52,9 @@ const STYLES = `
     right: 20px;
     width: 380px;
     height: 500px;
-    background: #0f0f19;
-    border: 1px solid rgba(139, 92, 246, 0.3);
-    border-radius: 12px;
+    background: #08090d;
+    border: 1px solid rgba(20, 184, 166, 0.28);
+    border-radius: 8px;
     z-index: 2147483647;
     display: flex;
     flex-direction: column;
@@ -39,14 +66,19 @@ const STYLES = `
 
   /* Header */
   .chat-header {
-    padding: 10px 16px;
-    background: rgba(139, 92, 246, 0.1);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+    padding: 10px 14px;
+    background: rgba(244, 3, 49, 0.12);
+    border-bottom: 1px solid rgba(20, 184, 166, 0.22);
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .chat-header-title { font-weight: 600; font-size: 14px; color: #c4b5fd; user-select: none; }
+  .chat-header-title { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; color: #f8fafc; user-select: none; }
+  .chat-header-mascot {
+    width: 30px; height: 30px; border-radius: 50%; object-fit: cover;
+    border: 1px solid rgba(20, 184, 166, 0.45);
+    box-shadow: 0 0 0 2px rgba(244, 3, 49, 0.18);
+  }
   .chat-status { font-size: 11px; color: #94a3b8; user-select: none; }
   .chat-header-right { display: flex; align-items: center; gap: 6px; }
   .chat-header-btn {
@@ -58,8 +90,8 @@ const STYLES = `
   /* Status bar */
   .chat-statusbar {
     padding: 4px 16px;
-    background: rgba(139, 92, 246, 0.05);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+    background: rgba(20, 184, 166, 0.06);
+    border-bottom: 1px solid rgba(20, 184, 166, 0.14);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -67,11 +99,12 @@ const STYLES = `
     color: #64748b;
     user-select: none;
   }
-  .statusbar-tags { display: flex; gap: 8px; }
+  .statusbar-tags { display: flex; gap: 8px; flex-wrap: wrap; }
   .statusbar-tag {
     display: flex; align-items: center; gap: 3px;
   }
-  .statusbar-tag.active { color: #a5b4fc; }
+  .statusbar-tag.active { color: #5eead4; }
+  .statusbar-tag.warning { color: #fb7185; }
   .statusbar-tag.inactive { color: #475569; }
   .statusbar-clear {
     background: none; border: none; color: #64748b; cursor: pointer;
@@ -82,8 +115,8 @@ const STYLES = `
   /* Settings panel */
   .settings-panel {
     padding: 12px 16px;
-    background: rgba(20, 20, 35, 0.95);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+    background: rgba(8, 9, 13, 0.97);
+    border-bottom: 1px solid rgba(20, 184, 166, 0.18);
     display: none;
     flex-direction: column;
     gap: 10px;
@@ -91,8 +124,11 @@ const STYLES = `
   .settings-panel.open { display: flex; }
   .setting-row {
     display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
   }
   .setting-label { font-size: 12px; color: #94a3b8; }
+  .setting-stack { display: flex; flex-direction: column; gap: 2px; }
+  .setting-hint { font-size: 10px; color: #64748b; line-height: 1.25; max-width: 210px; }
   .setting-toggle {
     position: relative; width: 36px; height: 20px; cursor: pointer;
   }
@@ -104,25 +140,80 @@ const STYLES = `
     content: ''; position: absolute; width: 14px; height: 14px; left: 3px; bottom: 3px;
     background: #94a3b8; border-radius: 50%; transition: transform 0.2s, background 0.2s;
   }
-  .setting-toggle input:checked + .slider { background: rgba(99, 102, 241, 0.5); }
-  .setting-toggle input:checked + .slider::before { transform: translateX(16px); background: #a5b4fc; }
+  .setting-toggle input:checked + .slider { background: rgba(244, 3, 49, 0.58); }
+  .setting-toggle input:checked + .slider::before { transform: translateX(16px); background: #f8fafc; }
+  .setting-toggle input:disabled + .slider { opacity: 0.45; cursor: not-allowed; }
   .setting-number {
-    width: 50px; background: rgba(30, 30, 50, 0.6); border: 1px solid rgba(139, 92, 246, 0.2);
+    width: 50px; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(20, 184, 166, 0.24);
     border-radius: 4px; padding: 3px 6px; color: #e2e8f0; font-size: 12px; text-align: center; outline: none;
   }
-  .setting-number:focus { border-color: rgba(139, 92, 246, 0.5); }
+  .setting-number:focus { border-color: rgba(20, 184, 166, 0.55); }
   .setting-select {
-    background: rgba(30, 30, 50, 0.6); border: 1px solid rgba(139, 92, 246, 0.2);
+    background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(20, 184, 166, 0.24);
     border-radius: 4px; padding: 3px 6px; color: #e2e8f0; font-size: 12px; outline: none; cursor: pointer;
   }
-  .setting-select:focus { border-color: rgba(139, 92, 246, 0.5); }
+  .setting-select:focus { border-color: rgba(20, 184, 166, 0.55); }
   .setting-select:disabled { opacity: 0.4; cursor: not-allowed; }
+  .setting-action {
+    background: rgba(20, 184, 166, 0.12); border: 1px solid rgba(20, 184, 166, 0.28);
+    border-radius: 6px; padding: 5px 9px; color: #5eead4; cursor: pointer;
+    font-size: 12px; transition: background 0.2s;
+  }
+  .setting-action:hover { background: rgba(20, 184, 166, 0.2); }
   .setting-disable {
     background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3);
     border-radius: 6px; padding: 6px 12px; color: #f87171; cursor: pointer;
     font-size: 12px; width: 100%; transition: background 0.2s;
   }
   .setting-disable:hover { background: rgba(239, 68, 68, 0.25); }
+
+  /* Model download card */
+  .model-card {
+    margin: 10px 12px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(20, 184, 166, 0.28);
+    background: rgba(15, 23, 42, 0.78);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .model-card-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 650;
+    color: #f8fafc;
+  }
+  .model-card-state { font-size: 11px; color: #5eead4; white-space: nowrap; }
+  .model-card-copy { font-size: 11px; line-height: 1.35; color: #94a3b8; }
+  .model-card-progress {
+    height: 6px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(100, 116, 139, 0.24);
+  }
+  .model-card-progress > span {
+    display: block;
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #14b8a6, #f40331);
+    transition: width 0.2s ease;
+  }
+  .model-card-action {
+    align-self: flex-start;
+    background: rgba(244, 3, 49, 0.55);
+    border: 1px solid rgba(244, 3, 49, 0.28);
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .model-card-action:hover { background: rgba(244, 3, 49, 0.75); }
+  .model-card-action:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* Messages */
   .chat-messages {
@@ -135,7 +226,7 @@ const STYLES = `
   }
   .message-user {
     white-space: pre-wrap; align-self: flex-end;
-    background: rgba(99, 102, 241, 0.3); border: 1px solid rgba(99, 102, 241, 0.2);
+    background: rgba(244, 3, 49, 0.25); border: 1px solid rgba(244, 3, 49, 0.26);
   }
   .message-agent {
     white-space: normal; align-self: flex-start;
@@ -154,10 +245,10 @@ const STYLES = `
   .message-agent pre code { background: none; padding: 0; }
   .message-agent ul, .message-agent ol { margin: 4px 0; padding-left: 20px; }
   .message-agent li { margin: 2px 0; }
-  .message-agent strong { color: #c4b5fd; }
-  .message-agent a { color: #818cf8; }
+  .message-agent strong { color: #5eead4; }
+  .message-agent a { color: #2dd4bf; }
   .message-agent h1, .message-agent h2, .message-agent h3 {
-    font-size: 14px; font-weight: 600; color: #c4b5fd; margin: 8px 0 4px 0;
+    font-size: 14px; font-weight: 600; color: #5eead4; margin: 8px 0 4px 0;
   }
   .message-stopped {
     align-self: flex-start; background: rgba(244, 63, 94, 0.1);
@@ -230,26 +321,28 @@ const STYLES = `
 
   /* Input */
   .chat-input-area {
-    padding: 12px; border-top: 1px solid rgba(139, 92, 246, 0.2);
+    padding: 12px; border-top: 1px solid rgba(20, 184, 166, 0.18);
     display: flex; gap: 8px;
   }
   .chat-input {
-    flex: 1; background: rgba(30, 30, 50, 0.6); border: 1px solid rgba(139, 92, 246, 0.2);
+    flex: 1; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(20, 184, 166, 0.24);
     border-radius: 8px; padding: 8px 12px; color: #e2e8f0; font-size: 14px;
     outline: none; font-family: inherit; resize: none;
   }
-  .chat-input:focus { border-color: rgba(139, 92, 246, 0.5); }
+  .chat-input:focus { border-color: rgba(20, 184, 166, 0.55); }
   .chat-input::placeholder { color: #64748b; }
-  .chat-send, .chat-stop {
-    background: rgba(99, 102, 241, 0.5); border: none; border-radius: 8px;
+  .chat-send, .chat-stop, .chat-mic {
+    background: rgba(244, 3, 49, 0.55); border: none; border-radius: 8px;
     width: 36px; height: 36px; color: white; cursor: pointer; transition: background 0.2s;
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
-  .chat-send:hover, .chat-stop:hover { background: rgba(99, 102, 241, 0.7); }
-  .chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chat-send:hover, .chat-stop:hover, .chat-mic:hover { background: rgba(244, 3, 49, 0.75); }
+  .chat-send:disabled, .chat-mic:disabled { opacity: 0.4; cursor: not-allowed; }
   .chat-stop { background: rgba(239, 68, 68, 0.5); }
   .chat-stop:hover { background: rgba(239, 68, 68, 0.7); }
-  .chat-send svg, .chat-stop svg { width: 18px; height: 18px; }
+  .chat-mic { background: rgba(20, 184, 166, 0.36); }
+  .chat-mic.recording { background: rgba(244, 3, 49, 0.8); }
+  .chat-send svg, .chat-stop svg, .chat-mic svg { width: 18px; height: 18px; }
 `
 
 export interface ChatOverlayCallbacks {
@@ -259,6 +352,11 @@ export interface ChatOverlayCallbacks {
   onClearContext: () => void
   onDisableSite: () => void
   onModelSwitch: (modelId: ModelId) => void
+  onModelLoad: (modelId: ModelId) => void
+  onScreenMascotChange: (visible: boolean) => void
+  onVoiceTranscribe: (payload: { audioSamples: number[], sampleRate: number }) => void
+  onVoiceStop: () => void
+  onVoiceClearCache: () => void
 }
 
 export class ChatOverlay {
@@ -267,6 +365,7 @@ export class ChatOverlay {
   private container: HTMLElement
   private messagesEl: HTMLElement
   private inputEl: HTMLTextAreaElement
+  private micBtn: HTMLButtonElement
   private sendBtn: HTMLButtonElement
   private stopBtn: HTMLButtonElement
   private statusEl: HTMLElement
@@ -274,18 +373,35 @@ export class ChatOverlay {
   private thinkingTag: HTMLElement
   private iterationsTag: HTMLElement
   private modelTag: HTMLElement
+  private mtpTag: HTMLElement
+  private voiceTag: HTMLElement
+  private modelCard: HTMLElement | null = null
+  private modelCardState: HTMLElement | null = null
+  private modelCardCopy: HTMLElement | null = null
+  private modelCardProgress: HTMLElement | null = null
+  private modelCardAction: HTMLButtonElement | null = null
   private modelSelect: HTMLSelectElement
+  private mediaRecorder: MediaRecorder | null = null
+  private mediaStream: MediaStream | null = null
+  private speechRecognition: SpeechRecognition | null = null
+  private currentAudio: HTMLAudioElement | null = null
+  private recordedChunks: Blob[] = []
+  private recordingTimeoutId: number | null = null
   private typingEl: HTMLElement | null = null
   private streamEl: HTMLElement | null = null
   private streamText = ''
   private thinkingStreamEl: HTMLElement | null = null
   private thinkingStreamText = ''
   private visible = false
-  settings: ChatSettings = { ...DEFAULT_SETTINGS }
+  private selectedModelId: ModelId = DEFAULT_MODEL_ID
+  settings: ChatSettings = {
+    ...DEFAULT_SETTINGS,
+    voice: { ...DEFAULT_SETTINGS.voice },
+  }
 
   constructor(callbacks: ChatOverlayCallbacks) {
     this.host = document.createElement('div')
-    this.host.id = 'gemma-gem-chat'
+    this.host.id = 'alkahest-browser-companion-chat'
     this.shadow = this.host.attachShadow({ mode: 'closed' })
 
     const style = document.createElement('style')
@@ -301,7 +417,8 @@ export class ChatOverlay {
     header.className = 'chat-header'
     const title = document.createElement('span')
     title.className = 'chat-header-title'
-    title.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="16" height="16" style="vertical-align: -2px; margin-right: 4px;"><polygon points="24,4 38,16 10,16" fill="#c084fc" opacity="0.9"/><polygon points="10,16 24,44 4,20" fill="#818cf8" opacity="0.85"/><polygon points="38,16 24,44 44,20" fill="#7c3aed" opacity="0.85"/><polygon points="10,16 38,16 24,44" fill="#a78bfa" opacity="0.95"/><polygon points="20,10 28,10 24,18" fill="white" opacity="0.3"/></svg>Gemma Gem`
+    const mascotUrl = browser.runtime.getURL('mascot/alkahest-f-chibi.png' as any)
+    title.innerHTML = `<img class="chat-header-mascot" src="${mascotUrl}" alt="">Alkahest Browser Companion`
     this.statusEl = document.createElement('span')
     this.statusEl.className = 'chat-status'
     this.statusEl.textContent = 'Initializing...'
@@ -333,7 +450,7 @@ export class ChatOverlay {
     this.settingsPanel.className = 'settings-panel'
 
     const modelOptions = Object.values(MODELS).map(m =>
-      `<option value="${m.id}">${m.label} (${m.downloadSize})</option>`
+      `<option value="${m.id}">${m.label}</option>`
     ).join('')
 
     this.settingsPanel.innerHTML = `
@@ -352,8 +469,67 @@ export class ChatOverlay {
         <span class="setting-label">Max tool iterations</span>
         <input type="number" class="setting-number" data-setting="maxIterations" value="${this.settings.maxIterations}" min="1" max="50">
       </div>
+      <div class="setting-row">
+        <span class="setting-stack">
+          <span class="setting-label">MTP acceleration</span>
+          <span class="setting-hint">Experimental. Falls back to baseline unless browser assistant-model support is present.</span>
+        </span>
+        <label class="setting-toggle" title="Experimental Gemma 4 MTP">
+          <input type="checkbox" data-setting="experimentalMtp" ${this.settings.experimentalMtp ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <span class="setting-stack">
+          <span class="setting-label">Screen mascot</span>
+          <span class="setting-hint">Shows the character in the page corner.</span>
+        </span>
+        <label class="setting-toggle">
+          <input type="checkbox" data-setting="showScreenMascot" ${this.settings.showScreenMascot ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <span class="setting-stack">
+          <span class="setting-label">Speech input</span>
+          <span class="setting-hint">Web Speech avoids a Whisper download; Chrome may route recognition through browser services.</span>
+        </span>
+        <select class="setting-select" data-setting="voiceAsrProvider">
+          <option value="off">Off</option>
+          <option value="webspeech">Web Speech API</option>
+          <option value="whisper">Local Whisper</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Speak responses</span>
+        <label class="setting-toggle">
+          <input type="checkbox" data-setting="voiceSpeakResponses" ${this.settings.voice.speakResponses ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <span class="setting-stack">
+          <span class="setting-label">TTS provider</span>
+          <span class="setting-hint">Pocket uses a local server at 127.0.0.1:8000.</span>
+        </span>
+        <select class="setting-select" data-setting="voiceTtsProvider">
+          <option value="off">Off</option>
+          <option value="chrome">Chrome / OS TTS</option>
+          <option value="pocket">Pocket TTS local</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">Voice runtime</span>
+        <button class="setting-action" data-action="voiceClearCache" type="button">Unload voice model</button>
+      </div>
     `
     this.modelSelect = this.settingsPanel.querySelector('[data-setting="modelId"]') as HTMLSelectElement
+    const asrSelect = this.settingsPanel.querySelector('[data-setting="voiceAsrProvider"]') as HTMLSelectElement
+    asrSelect.value = this.settings.voice.asrProvider
+    const ttsSelect = this.settingsPanel.querySelector('[data-setting="voiceTtsProvider"]') as HTMLSelectElement
+    ttsSelect.value = this.settings.voice.ttsProvider
+    const clearVoiceBtn = this.settingsPanel.querySelector('[data-action="voiceClearCache"]') as HTMLButtonElement
+    clearVoiceBtn.addEventListener('click', () => callbacks.onVoiceClearCache())
     const disableBtn = document.createElement('button')
     disableBtn.className = 'setting-disable'
     disableBtn.textContent = 'Disable on this site'
@@ -372,6 +548,22 @@ export class ChatOverlay {
         this.settings.thinking = target.checked
       } else if (key === 'maxIterations') {
         this.settings.maxIterations = parseInt(target.value, 10) || 10
+      } else if (key === 'experimentalMtp') {
+        this.settings.experimentalMtp = target.checked
+        if (target.checked) {
+          this.addMessage('MTP requested. This browser runtime will keep baseline decoding unless Gemma assistant-model support is available.', 'agent')
+        }
+      } else if (key === 'showScreenMascot') {
+        this.settings.showScreenMascot = target.checked
+        callbacks.onScreenMascotChange(target.checked)
+      } else if (key === 'voiceAsrProvider') {
+        this.settings.voice.asrProvider = target.value as VoiceAsrProvider
+      } else if (key === 'voiceAsrEnabled') {
+        this.settings.voice.asrProvider = target.checked ? 'whisper' : 'off'
+      } else if (key === 'voiceSpeakResponses') {
+        this.settings.voice.speakResponses = target.checked
+      } else if (key === 'voiceTtsProvider') {
+        this.settings.voice.ttsProvider = target.value as VoiceTtsProvider
       }
       this.updateStatusBar()
       callbacks.onSettingsChange(this.settings)
@@ -391,9 +583,17 @@ export class ChatOverlay {
     this.iterationsTag = document.createElement('span')
     this.iterationsTag.className = 'statusbar-tag active'
     this.iterationsTag.textContent = `\u{1F504} ${this.settings.maxIterations} iters`
+    this.mtpTag = document.createElement('span')
+    this.mtpTag.className = 'statusbar-tag warning'
+    this.mtpTag.textContent = 'MTP off'
+    this.voiceTag = document.createElement('span')
+    this.voiceTag.className = 'statusbar-tag inactive'
+    this.voiceTag.textContent = 'Voice off'
     tags.appendChild(this.modelTag)
     tags.appendChild(this.thinkingTag)
     tags.appendChild(this.iterationsTag)
+    tags.appendChild(this.mtpTag)
+    tags.appendChild(this.voiceTag)
     const clearBtn = document.createElement('button')
     clearBtn.className = 'statusbar-clear'
     clearBtn.textContent = 'Clear context'
@@ -416,6 +616,10 @@ export class ChatOverlay {
     this.inputEl.className = 'chat-input'
     this.inputEl.placeholder = 'Ask about this page...'
     this.inputEl.rows = 1
+    this.micBtn = document.createElement('button')
+    this.micBtn.className = 'chat-mic'
+    this.micBtn.title = 'Record speech input'
+    this.micBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>'
     this.sendBtn = document.createElement('button')
     this.sendBtn.className = 'chat-send'
     this.sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
@@ -426,18 +630,21 @@ export class ChatOverlay {
     this.stopBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
 
     inputArea.appendChild(this.inputEl)
+    inputArea.appendChild(this.micBtn)
     inputArea.appendChild(this.sendBtn)
     inputArea.appendChild(this.stopBtn)
 
     this.container.appendChild(header)
     this.container.appendChild(this.settingsPanel)
     this.container.appendChild(statusBar)
+    this.createModelCard(callbacks.onModelLoad)
     this.container.appendChild(this.messagesEl)
     this.container.appendChild(inputArea)
     this.shadow.appendChild(this.container)
 
     this.sendBtn.addEventListener('click', () => this.handleSend(callbacks.onSend))
     this.stopBtn.addEventListener('click', () => callbacks.onStop())
+    this.micBtn.addEventListener('click', () => this.handleVoiceRecord(callbacks.onVoiceTranscribe))
 
     for (const event of ['keydown', 'keyup', 'keypress'] as const) {
       this.inputEl.addEventListener(event, (e) => e.stopPropagation())
@@ -449,12 +656,274 @@ export class ChatOverlay {
         this.handleSend(callbacks.onSend)
       }
     })
+
+    this.updateStatusBar()
+  }
+
+  private createModelCard(onModelLoad: (modelId: ModelId) => void): void {
+    this.modelCard = document.createElement('div')
+    this.modelCard.className = 'model-card'
+
+    const title = document.createElement('div')
+    title.className = 'model-card-title'
+    const titleText = document.createElement('span')
+    titleText.textContent = MODELS[this.selectedModelId].label
+    this.modelCardState = document.createElement('span')
+    this.modelCardState.className = 'model-card-state'
+    this.modelCardState.textContent = 'Checking cache...'
+    title.appendChild(titleText)
+    title.appendChild(this.modelCardState)
+
+    this.modelCardCopy = document.createElement('div')
+    this.modelCardCopy.className = 'model-card-copy'
+    this.modelCardCopy.textContent = 'Checking browser cache and exact Hugging Face file sizes.'
+
+    const progress = document.createElement('div')
+    progress.className = 'model-card-progress'
+    this.modelCardProgress = document.createElement('span')
+    progress.appendChild(this.modelCardProgress)
+
+    this.modelCardAction = document.createElement('button')
+    this.modelCardAction.className = 'model-card-action'
+    this.modelCardAction.type = 'button'
+    this.modelCardAction.textContent = 'Checking...'
+    this.modelCardAction.disabled = true
+    this.modelCardAction.addEventListener('click', () => onModelLoad(this.selectedModelId))
+
+    this.modelCard.appendChild(title)
+    this.modelCard.appendChild(this.modelCardCopy)
+    this.modelCard.appendChild(progress)
+    this.modelCard.appendChild(this.modelCardAction)
+    this.container.appendChild(this.modelCard)
+  }
+
+  showModelInfo(info: ModelInfoMessage): void {
+    this.selectedModelId = info.modelId
+    this.setSelectedModel(info.modelId)
+    if (!this.modelCard || !this.modelCardState || !this.modelCardCopy || !this.modelCardProgress || !this.modelCardAction) return
+
+    const modelTitle = this.modelCard.querySelector('.model-card-title span:first-child')
+    if (modelTitle) modelTitle.textContent = info.label
+
+    const total = formatBytes(info.totalBytes)
+    const cached = formatBytes(info.cachedBytes)
+    const missing = formatBytes(info.missingBytes)
+    const fileCount = `${info.cachedFiles}/${info.totalFiles} files`
+    this.modelCardProgress.style.width = info.totalBytes > 0
+      ? `${Math.round((info.cachedBytes / info.totalBytes) * 100)}%`
+      : '0%'
+
+    if (info.allCached) {
+      this.modelCardState.textContent = 'Cached'
+      this.modelCardCopy.textContent = `${cached} cached locally (${fileCount}). No model download is needed; loading still allocates WebGPU memory.`
+      this.modelCardAction.textContent = 'Load cached model'
+    } else {
+      this.modelCardState.textContent = 'Download required'
+      this.modelCardCopy.textContent = `${missing} still needs download. Total selected runtime files: ${total}; currently cached: ${cached} (${fileCount}).`
+      this.modelCardAction.textContent = 'Download and load'
+    }
+    this.modelCardAction.disabled = false
+  }
+
+  showModelReady(modelId: ModelId): void {
+    this.selectedModelId = modelId
+    this.setSelectedModel(modelId)
+    if (!this.modelCardState || !this.modelCardCopy || !this.modelCardProgress || !this.modelCardAction) return
+    this.modelCardState.textContent = 'Ready'
+    this.modelCardCopy.textContent = `${MODELS[modelId].label} is loaded. Future reloads should use the browser cache unless it is cleared.`
+    this.modelCardProgress.style.width = '100%'
+    this.modelCardAction.textContent = 'Loaded'
+    this.modelCardAction.disabled = true
+  }
+
+  showModelError(message: string): void {
+    if (!this.modelCardState || !this.modelCardCopy || !this.modelCardAction) return
+    this.modelCardState.textContent = 'Error'
+    this.modelCardCopy.textContent = message
+    this.modelCardAction.textContent = 'Retry load'
+    this.modelCardAction.disabled = false
+  }
+
+  updateModelDownloadProgress(progress: number, loadedBytes?: number, totalBytes?: number): void {
+    if (!this.modelCardState || !this.modelCardCopy || !this.modelCardProgress || !this.modelCardAction) return
+    const pct = Math.max(0, Math.min(100, Math.round(progress)))
+    this.modelCardState.textContent = `${pct}%`
+    this.modelCardProgress.style.width = `${pct}%`
+    this.modelCardAction.textContent = 'Loading...'
+    this.modelCardAction.disabled = true
+    if (loadedBytes != null && totalBytes != null && totalBytes > 0) {
+      this.modelCardCopy.textContent = `Downloaded ${formatBytes(loadedBytes)} of ${formatBytes(totalBytes)}.`
+    } else {
+      this.modelCardCopy.textContent = 'Loading model files into the browser cache.'
+    }
   }
 
   private updateStatusBar(): void {
     this.thinkingTag.className = `statusbar-tag ${this.settings.thinking ? 'active' : 'inactive'}`
     this.thinkingTag.textContent = `\u{1F9E0} Thinking ${this.settings.thinking ? 'ON' : 'OFF'}`
     this.iterationsTag.textContent = `\u{1F504} ${this.settings.maxIterations} iters`
+    this.mtpTag.className = `statusbar-tag ${this.settings.experimentalMtp ? 'active' : 'warning'}`
+    this.mtpTag.textContent = this.settings.experimentalMtp ? 'MTP requested' : 'MTP off'
+    const voiceOn = this.settings.voice.asrProvider !== 'off' || this.settings.voice.speakResponses
+    this.voiceTag.className = `statusbar-tag ${voiceOn ? 'active' : 'inactive'}`
+    this.voiceTag.textContent = voiceOn ? `Voice ${this.settings.voice.asrProvider}` : 'Voice off'
+    this.micBtn.disabled = this.settings.voice.asrProvider === 'off'
+  }
+
+  private async handleVoiceRecord(
+    onVoiceTranscribe: (payload: { audioSamples: number[], sampleRate: number }) => void,
+  ): Promise<void> {
+    if (this.settings.voice.asrProvider === 'off') {
+      this.addMessage('Speech input is disabled. Enable Web Speech or Local Whisper in settings first.', 'agent')
+      return
+    }
+
+    if (this.settings.voice.asrProvider === 'webspeech') {
+      this.handleWebSpeechRecognition()
+      return
+    }
+
+    if (this.mediaRecorder?.state === 'recording') {
+      this.stopVoiceRecording()
+      return
+    }
+
+    try {
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      this.recordedChunks = []
+      const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? { mimeType: 'audio/webm;codecs=opus' }
+        : undefined
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, options)
+      this.mediaRecorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size > 0) this.recordedChunks.push(event.data)
+      })
+      this.mediaRecorder.addEventListener('stop', () => {
+        this.finishVoiceRecording(onVoiceTranscribe).catch((error) => {
+          this.setVoiceStatus(`Voice error: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }, { once: true })
+      this.mediaRecorder.start()
+      this.micBtn.classList.add('recording')
+      this.micBtn.title = 'Stop Whisper recording'
+      this.setVoiceStatus('Recording voice...')
+      this.recordingTimeoutId = window.setTimeout(() => this.stopVoiceRecording(), 30000)
+    } catch (error) {
+      this.setVoiceStatus(`Mic unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private handleWebSpeechRecognition(): void {
+    if (this.speechRecognition) {
+      this.speechRecognition.stop()
+      return
+    }
+
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
+    if (!Recognition) {
+      this.setVoiceStatus('Web Speech unavailable')
+      this.addMessage('This Chrome build does not expose SpeechRecognition on this page. Use Local Whisper instead.', 'agent')
+      return
+    }
+
+    const recognition = new Recognition()
+    this.speechRecognition = recognition
+    recognition.lang = navigator.language || 'en-US'
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.maxAlternatives = 1
+
+    recognition.onstart = () => {
+      this.micBtn.classList.add('recording')
+      this.micBtn.title = 'Stop Web Speech input'
+      this.setVoiceStatus('Listening...')
+    }
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map(result => result[0]?.transcript ?? '')
+        .join(' ')
+        .trim()
+      if (transcript) this.applyTranscript(transcript)
+    }
+    recognition.onerror = (event) => {
+      this.setVoiceStatus(`Speech error: ${event.error}`)
+    }
+    recognition.onend = () => {
+      this.speechRecognition = null
+      this.micBtn.classList.remove('recording')
+      this.micBtn.title = 'Record speech input'
+      this.setVoiceStatus('Voice ready')
+    }
+    recognition.start()
+  }
+
+  private stopVoiceRecording(): void {
+    if (this.recordingTimeoutId != null) {
+      window.clearTimeout(this.recordingTimeoutId)
+      this.recordingTimeoutId = null
+    }
+    if (this.mediaRecorder?.state === 'recording') {
+      this.mediaRecorder.stop()
+    }
+  }
+
+  private async finishVoiceRecording(
+    onVoiceTranscribe: (payload: { audioSamples: number[], sampleRate: number }) => void,
+  ): Promise<void> {
+    this.micBtn.classList.remove('recording')
+    this.micBtn.title = 'Record speech input'
+    this.mediaStream?.getTracks().forEach(track => track.stop())
+    this.mediaStream = null
+
+    if (this.recordedChunks.length === 0) {
+      this.setVoiceStatus('No voice captured')
+      return
+    }
+
+    this.setVoiceStatus('Preparing audio...')
+    const blob = new Blob(this.recordedChunks, { type: this.recordedChunks[0]?.type || 'audio/webm' })
+    const payload = await this.blobToWhisperSamples(blob)
+    this.setVoiceStatus('Transcribing locally...')
+    onVoiceTranscribe(payload)
+  }
+
+  private async blobToWhisperSamples(blob: Blob): Promise<{ audioSamples: number[], sampleRate: number }> {
+    const targetSampleRate = 16000
+    const audioContext = new AudioContext()
+    try {
+      const decoded = await audioContext.decodeAudioData(await blob.arrayBuffer())
+      const mono = new Float32Array(decoded.length)
+      for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+        const channelData = decoded.getChannelData(channel)
+        for (let i = 0; i < channelData.length; i++) {
+          mono[i] += channelData[i] / decoded.numberOfChannels
+        }
+      }
+
+      if (decoded.sampleRate === targetSampleRate) {
+        return { audioSamples: Array.from(mono), sampleRate: targetSampleRate }
+      }
+
+      const sourceBuffer = new AudioBuffer({
+        length: mono.length,
+        numberOfChannels: 1,
+        sampleRate: decoded.sampleRate,
+      })
+      sourceBuffer.copyToChannel(mono, 0)
+      const offlineContext = new OfflineAudioContext(
+        1,
+        Math.ceil(sourceBuffer.duration * targetSampleRate),
+        targetSampleRate,
+      )
+      const source = offlineContext.createBufferSource()
+      source.buffer = sourceBuffer
+      source.connect(offlineContext.destination)
+      source.start()
+      const resampled = await offlineContext.startRendering()
+      return { audioSamples: Array.from(resampled.getChannelData(0)), sampleRate: targetSampleRate }
+    } finally {
+      await audioContext.close()
+    }
   }
 
   private handleSend(onSend: (text: string) => void): void {
@@ -641,11 +1110,24 @@ export class ChatOverlay {
     this.statusEl.textContent = status
   }
 
+  setVoiceStatus(status: string): void {
+    this.voiceTag.textContent = status
+  }
+
+  applyTranscript(text: string): void {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const prefix = this.inputEl.value.trim()
+    this.inputEl.value = prefix ? `${prefix} ${trimmed}` : trimmed
+    this.inputEl.focus()
+  }
+
   private generating = false
 
   setInputEnabled(enabled: boolean): void {
     this.inputEl.disabled = !enabled
     this.sendBtn.disabled = !enabled
+    this.micBtn.disabled = !enabled || this.settings.voice.asrProvider === 'off'
     if (enabled) {
       this.generating = false
       this.sendBtn.style.display = 'flex'
@@ -662,6 +1144,38 @@ export class ChatOverlay {
       this.sendBtn.style.display = 'none'
       this.stopBtn.style.display = 'flex'
     }
+  }
+
+  playAudio(bytes: number[], mimeType: string): void {
+    this.stopAudioPlayback()
+    const blob = new Blob([new Uint8Array(bytes)], { type: mimeType || 'audio/wav' })
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    this.currentAudio = audio
+    audio.addEventListener('ended', () => {
+      URL.revokeObjectURL(url)
+      if (this.currentAudio === audio) this.currentAudio = null
+      this.setVoiceStatus('Voice ready')
+    }, { once: true })
+    audio.addEventListener('error', () => {
+      URL.revokeObjectURL(url)
+      if (this.currentAudio === audio) this.currentAudio = null
+      this.setVoiceStatus('Audio playback failed')
+    }, { once: true })
+    audio.play().then(() => this.setVoiceStatus('Speaking response')).catch(error => {
+      URL.revokeObjectURL(url)
+      if (this.currentAudio === audio) this.currentAudio = null
+      this.setVoiceStatus(`Audio blocked: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  stopAudioPlayback(): void {
+    if (!this.currentAudio) return
+    const src = this.currentAudio.src
+    this.currentAudio.pause()
+    this.currentAudio.src = ''
+    if (src.startsWith('blob:')) URL.revokeObjectURL(src)
+    this.currentAudio = null
   }
 
   getElement(): HTMLElement {

@@ -4,11 +4,13 @@ import {
   TextStreamer,
   load_image,
   env,
+  ModelRegistry,
 } from '@huggingface/transformers'
 import type { ModelBackend, GenerateOptions } from '@kessler/gemma-agent'
 import { ToolResultImage, ToolResultAudio } from '@kessler/gemma-agent'
 import { log } from '@/shared/logger'
 import { MODELS, DEFAULT_MODEL_ID, type ModelId } from '@/shared/models'
+import type { ModelInfoMessage } from '@/shared/messages'
 
 const SPECIAL_TOKENS = new Set([
   '<eos>', '<bos>', '<end_of_turn>', '<start_of_turn>',
@@ -32,9 +34,17 @@ function stripSpecialTokens(text: string): string {
 }
 
 // Configure ONNX Runtime to load backend files locally instead of from CDN
-env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL('ort/')
+const onnxWasmBackend = env.backends.onnx.wasm
+if (onnxWasmBackend) {
+  onnxWasmBackend.wasmPaths = chrome.runtime.getURL('ort/')
+}
 
-type StatusCallback = (status: 'loading' | 'ready' | 'error', progress?: number, error?: string) => void
+type StatusCallback = (
+  status: 'loading' | 'ready' | 'error',
+  progress?: number,
+  error?: string,
+  bytes?: { loadedBytes?: number, totalBytes?: number },
+) => void
 
 export class GemmaModelHost implements ModelBackend {
   private model: InstanceType<typeof Gemma4ForConditionalGeneration> | null = null
@@ -44,9 +54,50 @@ export class GemmaModelHost implements ModelBackend {
   private loadingModelId: ModelId | null = null
   private onStatus: StatusCallback
   private abortController: AbortController | null = null
+  private experimentalMtp = false
 
   constructor(onStatus: StatusCallback) {
     this.onStatus = onStatus
+  }
+
+  setExperimentalMtp(enabled: boolean): void {
+    this.experimentalMtp = enabled
+  }
+
+  async inspect(modelId: ModelId = DEFAULT_MODEL_ID): Promise<ModelInfoMessage> {
+    const config = MODELS[modelId]
+    const options = { dtype: config.dtype, device: 'webgpu' as const }
+    const files = await ModelRegistry.get_files(config.hfModelId, options)
+    const [cacheStatus, metadata] = await Promise.all([
+      ModelRegistry.is_cached_files(config.hfModelId, options),
+      Promise.all(files.map(file => ModelRegistry.get_file_metadata(config.hfModelId, file))),
+    ])
+    const cachedMap = new Map(cacheStatus.files.map(file => [file.file, file.cached]))
+    const fileInfo = files.map((file, index) => ({
+      file,
+      cached: cachedMap.get(file) ?? false,
+      size: metadata[index]?.size ?? 0,
+    }))
+    const totalBytes = fileInfo.reduce((sum, file) => sum + file.size, 0)
+    const cachedBytes = fileInfo.reduce((sum, file) => sum + (file.cached ? file.size : 0), 0)
+
+    return {
+      type: 'model:info',
+      modelId,
+      label: config.label,
+      allCached: fileInfo.every(file => file.cached),
+      cachedFiles: fileInfo.filter(file => file.cached).length,
+      totalFiles: fileInfo.length,
+      cachedBytes,
+      totalBytes,
+      missingBytes: Math.max(0, totalBytes - cachedBytes),
+      files: fileInfo,
+      supportsMtp: config.supportsMtp,
+      mtpAvailable: false,
+      mtpReason: config.supportsMtp
+        ? 'Transformers.js generation does not expose assistant_model/speculative decoding in this runtime.'
+        : 'No browser-compatible Gemma assistant ONNX model is configured for this model.',
+    }
   }
 
   async load(modelId: ModelId = DEFAULT_MODEL_ID): Promise<void> {
@@ -72,15 +123,27 @@ export class GemmaModelHost implements ModelBackend {
     const fileProgress = new Map<string, number>()
     let lastReportedProgress = -1
 
-    const progress_callback = (info: { status: string, file?: string, progress?: number }) => {
-      log.debug('progress_callback:', info.status, info.file ?? '', info.progress ?? '')
-      if (info.status === 'progress' && info.file != null) {
+    const fileBytes = new Map<string, { loaded: number, total: number }>()
+    const progress_callback = (info: { status: string, file?: string, progress?: number, loaded?: number, total?: number }) => {
+      log.debug('progress_callback:', info.status, info.file ?? '', info.progress ?? '', info.loaded ?? '', info.total ?? '')
+      if (info.status === 'progress_total') {
+        const overall = Math.round(info.progress ?? 0)
+        if (overall !== lastReportedProgress) {
+          lastReportedProgress = overall
+          this.onStatus('loading', overall, undefined, { loadedBytes: info.loaded, totalBytes: info.total })
+        }
+      } else if (info.status === 'progress' && info.file != null) {
         fileProgress.set(info.file, info.progress ?? 0)
+        if (info.loaded != null || info.total != null) {
+          fileBytes.set(info.file, { loaded: info.loaded ?? 0, total: info.total ?? 0 })
+        }
         const values = [...fileProgress.values()]
         const overall = Math.round(values.reduce((a, b) => a + b, 0) / Math.max(values.length, 1))
         if (overall !== lastReportedProgress) {
           lastReportedProgress = overall
-          this.onStatus('loading', overall)
+          const loadedBytes = [...fileBytes.values()].reduce((sum, file) => sum + file.loaded, 0)
+          const totalBytes = [...fileBytes.values()].reduce((sum, file) => sum + file.total, 0)
+          this.onStatus('loading', overall, undefined, { loadedBytes, totalBytes })
         }
       } else if (info.status === 'done' && info.file != null) {
         fileProgress.set(info.file, 100)
@@ -92,7 +155,7 @@ export class GemmaModelHost implements ModelBackend {
     try {
       const [model, processor] = await Promise.all([
         Gemma4ForConditionalGeneration.from_pretrained(config.hfModelId, {
-          dtype: 'q4f16',
+          dtype: config.dtype,
           device: 'webgpu',
           progress_callback,
         }),
@@ -138,12 +201,21 @@ export class GemmaModelHost implements ModelBackend {
     }
   }
 
+  private getTokenizer(): NonNullable<Awaited<ReturnType<typeof AutoProcessor.from_pretrained>>['tokenizer']> {
+    const tokenizer = this.processor?.tokenizer
+    if (!tokenizer) {
+      throw new Error('Tokenizer not loaded')
+    }
+    return tokenizer
+  }
+
   async generateRaw(prompt: string, options?: GenerateOptions): Promise<string> {
     if (!this.model || !this.processor) {
       throw new Error('Model not loaded')
     }
 
     const hasMedia = options?.media && options.media.length > 0
+    const tokenizer = this.getTokenizer()
     log.debug('Prompt length:', prompt.length, 'hasMedia:', hasMedia)
 
     log.debug('Step 1: tokenizing')
@@ -163,9 +235,9 @@ export class GemmaModelHost implements ModelBackend {
           { add_special_tokens: false },
         )
       } else {
-        inputs = this.processor.tokenizer(prompt, {
+        inputs = tokenizer(prompt, {
           add_special_tokens: false,
-          return_tensor: 'pt',
+          return_tensor: true,
         })
       }
     } catch (e) {
@@ -179,7 +251,7 @@ export class GemmaModelHost implements ModelBackend {
     let insideToolCall = false
     let streamer: InstanceType<typeof TextStreamer>
     try {
-      streamer = new TextStreamer(this.processor.tokenizer, {
+      streamer = new TextStreamer(tokenizer, {
         skip_prompt: true,
         skip_special_tokens: false,
         callback_function: (text: string) => {
@@ -218,6 +290,12 @@ export class GemmaModelHost implements ModelBackend {
     }
 
     log.debug('Step 3: generating')
+    if (this.experimentalMtp) {
+      const currentConfig = this.currentModelId ? MODELS[this.currentModelId] : null
+      if (!currentConfig?.supportsMtp) {
+        log.warn('MTP requested, but this browser runtime has no configured assistant ONNX model. Using baseline generation.')
+      }
+    }
     this.abortController = new AbortController()
     try {
       const output = await this.model.generate({
@@ -258,7 +336,7 @@ export class GemmaModelHost implements ModelBackend {
     if (!this.processor) {
       throw new Error('Cannot count tokens: model not loaded')
     }
-    const { input_ids } = this.processor.tokenizer(text, { add_special_tokens: false })
+    const { input_ids } = this.getTokenizer()(text, { add_special_tokens: false }) as { input_ids: { size: number } }
     return input_ids.size
   }
 

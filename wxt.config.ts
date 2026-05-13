@@ -32,10 +32,16 @@ if (!ALLOWED_MODES.has(mode)) {
 
 export default defineConfig({
   manifest: {
-    name: mode === 'development' ? 'Gemma Gem [dev]' : 'Gemma Gem',
-    description: 'Browser AI agent powered by Gemma 4 via WebGPU',
-    permissions: ['activeTab', 'scripting', 'offscreen', 'storage'],
+    name: mode === 'development' ? 'Alkahest Browser Companion [dev]' : 'Alkahest Browser Companion',
+    description: 'Browser-local Alkahest companion powered by Gemma 4 via WebGPU',
+    permissions: ['activeTab', 'scripting', 'offscreen', 'storage', 'tts'],
     host_permissions: ['<all_urls>'],
+    web_accessible_resources: [
+      {
+        resources: ['mascot/*', 'icon/*'],
+        matches: ['<all_urls>'],
+      },
+    ],
     content_security_policy: {
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     },

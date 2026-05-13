@@ -3,6 +3,7 @@ import { Agent, image, audio, maxTurns } from '@kessler/gemma-agent'
 import type { ToolDefinition, ToolResultValue } from '@kessler/gemma-agent'
 import { TOOL_DEFINITIONS, type ToolDefWithMedia } from '@/shared/tool-definitions'
 import { GemmaModelHost } from '@/offscreen/model-host'
+import { VoiceHost } from '@/offscreen/voice-host'
 import { log } from '@/shared/logger'
 import { DEFAULT_MODEL_ID, type ModelId } from '@/shared/models'
 
@@ -32,7 +33,7 @@ function buildSystemPrompt(pageContext?: string): string {
     `time: ${time}`,
     `location: ${country}`,
     '',
-    'You are Gemma Gem, a browser assistant running inside a Chrome extension.',
+    'You are Alkahest Browser Companion, a browser-local assistant running inside a Chrome extension.',
     'Your tools are connected to the page the user is chatting from. They require no URL or target — they act on that page directly.',
     'Be concise.',
   ]
@@ -53,14 +54,14 @@ function buildSystemPrompt(pageContext?: string): string {
 
 // ===== WebGPU Diagnostic (run via message: { type: 'webgpu:diagnose' }) =====
 async function runWebGPUDiagnostic() {
-  const hasGPU = 'gpu' in navigator
-  log.info('navigator.gpu exists:', hasGPU)
-  if (!hasGPU) {
+  const gpu = navigator.gpu
+  log.info('navigator.gpu exists:', Boolean(gpu))
+  if (!gpu) {
     log.error('navigator.gpu NOT available in offscreen document')
     return false
   }
   try {
-    const adapter = await navigator.gpu.requestAdapter()
+    const adapter = await gpu.requestAdapter()
     if (!adapter) {
       log.error('navigator.gpu.requestAdapter() returned null')
       return false
@@ -83,13 +84,23 @@ async function runWebGPUDiagnostic() {
 log.info('Offscreen document initializing')
 
 // Model host — auto-load on startup
-const modelHost = new GemmaModelHost((status, progress, error) => {
+const modelHost = new GemmaModelHost((status, progress, error, bytes) => {
   chrome.runtime.sendMessage({
     type: 'model:status',
     status,
     modelId: modelHost.getCurrentModelId() ?? undefined,
     progress,
+    loadedBytes: bytes?.loadedBytes,
+    totalBytes: bytes?.totalBytes,
     error,
+  } satisfies Message)
+})
+
+const voiceHost = new VoiceHost((status, text) => {
+  chrome.runtime.sendMessage({
+    type: 'voice:status',
+    status: status === 'transcribing' ? 'transcribing' : status,
+    text,
   } satisfies Message)
 })
 
@@ -170,6 +181,22 @@ let currentTabId: number | null = null
 
 chrome.runtime.onMessage.addListener(async (message: Message) => {
   switch (message.type) {
+    case 'model:inspect': {
+      const modelId = message.modelId ?? modelHost.getCurrentModelId() ?? DEFAULT_MODEL_ID
+      try {
+        const info = await modelHost.inspect(modelId)
+        chrome.runtime.sendMessage(info satisfies Message)
+      } catch (error) {
+        chrome.runtime.sendMessage({
+          type: 'model:status',
+          status: 'error',
+          modelId,
+          error: `Failed to inspect model cache: ${error instanceof Error ? error.message : String(error)}`,
+        } satisfies Message)
+      }
+      break
+    }
+
     case 'model:load': {
       const modelId = message.modelId ?? modelHost.getCurrentModelId() ?? DEFAULT_MODEL_ID
       try {
@@ -207,6 +234,7 @@ chrome.runtime.onMessage.addListener(async (message: Message) => {
     case 'settings:update': {
       const { settings } = message
       log.info('Settings updated:', settings)
+      modelHost.setExperimentalMtp(settings.experimentalMtp)
       if (currentAgent) {
         currentAgent.updateOptions({
           thinking: settings.thinking,
@@ -233,6 +261,50 @@ chrome.runtime.onMessage.addListener(async (message: Message) => {
       break
     }
 
+    case 'voice:transcribe': {
+      const { tabId, audioSamples, sampleRate } = message
+      try {
+        if (tabId) {
+          chrome.runtime.sendMessage({
+            type: 'voice:status',
+            tabId,
+            status: 'loading',
+            text: 'Loading local Whisper...',
+          } satisfies Message)
+        }
+        const text = await voiceHost.transcribe(audioSamples, sampleRate)
+        if (tabId) {
+          chrome.runtime.sendMessage({
+            type: 'voice:transcript',
+            tabId,
+            text,
+          } satisfies Message)
+        }
+      } catch (error) {
+        log.error('Voice transcription failed:', error)
+        if (tabId) {
+          chrome.runtime.sendMessage({
+            type: 'voice:status',
+            tabId,
+            status: 'error',
+            text: `Voice transcription failed: ${error instanceof Error ? error.message : String(error)}`,
+          } satisfies Message)
+        }
+      }
+      break
+    }
+
+    case 'voice:clear-cache': {
+      const text = await voiceHost.clearRuntime()
+      chrome.runtime.sendMessage({
+        type: 'voice:status',
+        tabId: message.tabId,
+        status: 'idle',
+        text,
+      } satisfies Message)
+      break
+    }
+
     case 'agent:run': {
       if (!modelHost.isLoaded()) {
         chrome.runtime.sendMessage({
@@ -246,8 +318,9 @@ chrome.runtime.onMessage.addListener(async (message: Message) => {
       const { tabId, userMessage, settings, pageContext } = message
       log.info('Agent run, tab:', tabId, 'message:', userMessage.slice(0, 80))
 
-      const enableThinking = settings?.thinking ?? true
+      const enableThinking = settings?.thinking ?? false
       const maxIterations = settings?.maxIterations ?? 10
+      modelHost.setExperimentalMtp(settings?.experimentalMtp ?? false)
 
       if (currentTabId !== tabId || !currentAgent) {
         log.info('Creating new agent for tab', tabId)

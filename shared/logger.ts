@@ -1,6 +1,6 @@
 const IS_DEV = import.meta.env.DEV
 
-const PREFIX = '[Gemma Gem]'
+const PREFIX = '[Alkahest Browser Companion]'
 
 export const log = {
   info(...args: unknown[]) {

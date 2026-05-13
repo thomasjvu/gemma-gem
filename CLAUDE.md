@@ -1,4 +1,4 @@
-# Gemma Gem
+# Alkahest Browser Companion
 
 ## Package Manager
 

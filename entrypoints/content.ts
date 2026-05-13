@@ -6,7 +6,7 @@ import type { Message } from '@/shared/messages'
 import type { ToolCall } from '@kessler/gemma-agent'
 import { MODELS, STORAGE_KEY_MODEL, DEFAULT_MODEL_ID, type ModelId } from '@/shared/models'
 
-const STORAGE_KEY = 'gemma_disabled_sites'
+const STORAGE_KEY = 'alkahest_companion_disabled_sites'
 const PAGE_SNAPSHOT_MAX_LENGTH = 8000
 
 function capturePageSnapshot(): string {
@@ -24,15 +24,45 @@ function getSiteKey(): string {
   return location.hostname
 }
 
+function createScreenMascot(): HTMLElement {
+  const container = document.createElement('div')
+  container.id = 'alkahest-browser-companion-screen-mascot'
+  container.title = 'Alkahest Browser Companion'
+  Object.assign(container.style, {
+    position: 'fixed',
+    top: '12px',
+    left: '12px',
+    width: '86px',
+    height: '86px',
+    zIndex: '2147483645',
+    pointerEvents: 'none',
+    filter: 'drop-shadow(0 8px 16px rgba(0, 0, 0, 0.38))',
+  })
+
+  const img = document.createElement('img')
+  img.src = browser.runtime.getURL('mascot/alkahest-f-chibi.png' as any)
+  img.alt = ''
+  Object.assign(img.style, {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    objectPosition: 'top left',
+  })
+  container.appendChild(img)
+  return container
+}
+
 async function isDisabledForSite(): Promise<boolean> {
   const data = await browser.storage.local.get(STORAGE_KEY)
-  const sites: string[] = data[STORAGE_KEY] ?? []
+  const storedSites = data[STORAGE_KEY]
+  const sites = Array.isArray(storedSites) ? storedSites as string[] : []
   return sites.includes(getSiteKey())
 }
 
 async function setDisabledForSite(disabled: boolean): Promise<void> {
   const data = await browser.storage.local.get(STORAGE_KEY)
-  const sites: string[] = data[STORAGE_KEY] ?? []
+  const storedSites = data[STORAGE_KEY]
+  const sites = Array.isArray(storedSites) ? storedSites as string[] : []
   const site = getSiteKey()
 
   if (disabled && !sites.includes(site)) {
@@ -51,7 +81,10 @@ export default defineContentScript({
     let siteDisabled = await isDisabledForSite()
 
     const modelData = await browser.storage.local.get(STORAGE_KEY_MODEL)
-    const initialModelId: ModelId = modelData[STORAGE_KEY_MODEL] ?? DEFAULT_MODEL_ID
+    const storedModelId = modelData[STORAGE_KEY_MODEL]
+    const initialModelId: ModelId = typeof storedModelId === 'string' && storedModelId in MODELS
+      ? storedModelId as ModelId
+      : DEFAULT_MODEL_ID
 
     function safeSend(message: Message): void {
       try {
@@ -65,6 +98,10 @@ export default defineContentScript({
 
     const chat = new ChatOverlay({
       onSend(text) {
+        if (!modelReady) {
+          chat.addMessage('Load the selected local model first. The download card shows the exact size and cache state before anything is fetched.', 'agent')
+          return
+        }
         stopped = false
         chat.setGenerating(true)
         chat.setInputEnabled(false)
@@ -76,6 +113,7 @@ export default defineContentScript({
       onStop() {
         stopped = true
         safeSend({ type: 'chat:stop' } as any)
+        safeSend({ type: 'voice:stop' } as any)
         chat.finalizeThinkingStream()
         chat.finalizeStream('')
         chat.addMessage('Stopped', 'stopped')
@@ -92,19 +130,42 @@ export default defineContentScript({
         siteDisabled = true
         setDisabledForSite(true)
         chat.hide()
+        screenMascot.style.display = 'none'
         setGemDisabled(true)
       },
       onModelSwitch(modelId: ModelId) {
         chat.setInputEnabled(false)
         chat.setModelSwitchEnabled(false)
-        chat.addMessage(`Switching to ${MODELS[modelId].label}...`, 'agent')
+        chat.updateStatus('Checking cache...')
+        chat.addMessage(`Selected ${MODELS[modelId].label}. Checking browser cache before load.`, 'agent')
         modelReady = false
         shownLoadingMessage = false
         safeSend({ type: 'model:switch', modelId })
       },
+      onModelLoad(modelId: ModelId) {
+        chat.setInputEnabled(false)
+        chat.setModelSwitchEnabled(false)
+        chat.updateStatus('Loading model...')
+        modelReady = false
+        shownLoadingMessage = false
+        safeSend({ type: 'model:load-request', modelId })
+      },
+      onScreenMascotChange(visible) {
+        screenMascot.style.display = visible ? 'block' : 'none'
+      },
+      onVoiceTranscribe(payload) {
+        safeSend({ type: 'voice:transcribe', ...payload } as any)
+      },
+      onVoiceStop() {
+        safeSend({ type: 'voice:stop' } as any)
+      },
+      onVoiceClearCache() {
+        safeSend({ type: 'voice:clear-cache' } as any)
+      },
     })
 
     chat.setSelectedModel(initialModelId)
+    chat.setInputEnabled(false)
 
     let modelReady = false
     let shownLoadingMessage = false
@@ -112,22 +173,26 @@ export default defineContentScript({
 
     const icon = createGemIcon(() => {
       if (siteDisabled) {
-        if (confirm('Re-enable Gemma Gem on this site?')) {
+        if (confirm('Re-enable Alkahest Browser Companion on this site?')) {
           siteDisabled = false
           setDisabledForSite(false)
           setGemDisabled(false)
+          screenMascot.style.display = chat.settings.showScreenMascot ? 'block' : 'none'
         }
         return
       }
       chat.toggle()
       safeSend({ type: 'chat:open' })
     })
+    const screenMascot = createScreenMascot()
 
+    document.body.appendChild(screenMascot)
     document.body.appendChild(icon)
     document.body.appendChild(chat.getElement())
 
     if (siteDisabled) {
       setGemDisabled(true)
+      screenMascot.style.display = 'none'
     }
 
     browser.runtime.onMessage.addListener((message: Message) => {
@@ -138,6 +203,9 @@ export default defineContentScript({
           chat.finalizeStream(message.text)
           chat.setInputEnabled(true)
           chat.setModelSwitchEnabled(true)
+          if (chat.settings.voice.speakResponses && chat.settings.voice.ttsProvider !== 'off') {
+            safeSend({ type: 'voice:speak', text: message.text, provider: chat.settings.voice.ttsProvider } as any)
+          }
           break
 
         case 'agent:chunk':
@@ -165,6 +233,7 @@ export default defineContentScript({
           if (message.status === 'loading') {
             const pct = message.progress != null ? Math.round(message.progress) : 0
             updateGemProgress(pct)
+            chat.updateModelDownloadProgress(pct, message.loadedBytes, message.totalBytes)
             chat.updateStatus(`Loading model... ${pct}%`)
             chat.setInputEnabled(false)
             chat.setModelSwitchEnabled(false)
@@ -180,16 +249,45 @@ export default defineContentScript({
             chat.setModelSwitchEnabled(true)
             if (message.modelId) {
               chat.setSelectedModel(message.modelId)
+              chat.showModelReady(message.modelId)
             }
             if (!modelReady) {
               modelReady = true
-              chat.addMessage('Model loaded. How can I help with this page?', 'agent')
+              chat.addMessage('Local model loaded. How can I help with this page?', 'agent')
             }
           } else if (message.status === 'error') {
             updateGemProgress(-1)
             chat.updateStatus(`Error: ${message.error}`)
+            chat.showModelError(message.error ?? 'Model load failed')
             chat.setModelSwitchEnabled(true)
           }
+          break
+
+        case 'model:info':
+          chat.showModelInfo(message)
+          chat.updateStatus(message.allCached ? 'Cached model available' : 'Download required')
+          chat.setInputEnabled(false)
+          chat.setModelSwitchEnabled(true)
+          break
+
+        case 'voice:transcript':
+          chat.applyTranscript(message.text)
+          chat.setVoiceStatus('Voice ready')
+          break
+
+        case 'voice:status':
+          chat.setVoiceStatus(message.text)
+          if (message.status === 'error') {
+            chat.addMessage(message.text, 'agent')
+          }
+          break
+
+        case 'voice:audio':
+          chat.playAudio(message.bytes, message.mimeType)
+          break
+
+        case 'voice:audio-stop':
+          chat.stopAudioPlayback()
           break
       }
     })

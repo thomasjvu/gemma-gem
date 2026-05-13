@@ -5,6 +5,18 @@ import type { ModelId } from './models'
 export type ChatSettings = {
   thinking: boolean
   maxIterations: number
+  experimentalMtp: boolean
+  showScreenMascot: boolean
+  voice: VoiceSettings
+}
+
+export type VoiceAsrProvider = 'off' | 'webspeech' | 'whisper'
+export type VoiceTtsProvider = 'off' | 'chrome' | 'pocket'
+
+export type VoiceSettings = {
+  asrProvider: VoiceAsrProvider
+  speakResponses: boolean
+  ttsProvider: VoiceTtsProvider
 }
 
 export type ChatSendMessage = {
@@ -25,6 +37,16 @@ export type ContextClearMessage = {
 
 export type ChatOpenMessage = {
   type: 'chat:open'
+}
+
+export type ModelLoadRequestMessage = {
+  type: 'model:load-request'
+  modelId?: ModelId
+}
+
+export type ModelInspectMessage = {
+  type: 'model:inspect'
+  modelId?: ModelId
 }
 
 export type ChatStopMessage = {
@@ -64,12 +86,81 @@ export type ModelStatusMessage = {
   status: 'loading' | 'ready' | 'error'
   modelId?: ModelId
   progress?: number
+  loadedBytes?: number
+  totalBytes?: number
   error?: string
+}
+
+export type ModelInfoMessage = {
+  type: 'model:info'
+  modelId: ModelId
+  label: string
+  allCached: boolean
+  cachedFiles: number
+  totalFiles: number
+  cachedBytes: number
+  totalBytes: number
+  missingBytes: number
+  files: Array<{
+    file: string
+    cached: boolean
+    size: number
+  }>
+  supportsMtp: boolean
+  mtpAvailable: boolean
+  mtpReason: string
 }
 
 export type ModelSwitchMessage = {
   type: 'model:switch'
   modelId: ModelId
+}
+
+export type VoiceStatus = 'idle' | 'recording' | 'loading' | 'transcribing' | 'speaking' | 'error'
+
+export type VoiceTranscribeMessage = {
+  type: 'voice:transcribe'
+  tabId?: number
+  audioSamples: number[]
+  sampleRate: number
+}
+
+export type VoiceTranscriptMessage = {
+  type: 'voice:transcript'
+  tabId?: number
+  text: string
+}
+
+export type VoiceStatusMessage = {
+  type: 'voice:status'
+  tabId?: number
+  status: VoiceStatus
+  text: string
+}
+
+export type VoiceSpeakMessage = {
+  type: 'voice:speak'
+  provider: VoiceTtsProvider
+  text: string
+}
+
+export type VoiceAudioMessage = {
+  type: 'voice:audio'
+  mimeType: string
+  bytes: number[]
+}
+
+export type VoiceAudioStopMessage = {
+  type: 'voice:audio-stop'
+}
+
+export type VoiceStopMessage = {
+  type: 'voice:stop'
+}
+
+export type VoiceClearCacheMessage = {
+  type: 'voice:clear-cache'
+  tabId?: number
 }
 
 // Service Worker -> Offscreen Document
@@ -111,6 +202,8 @@ export type OffscreenModelStatusMessage = {
   status: 'loading' | 'ready' | 'error'
   modelId?: ModelId
   progress?: number
+  loadedBytes?: number
+  totalBytes?: number
   error?: string
 }
 
@@ -122,6 +215,8 @@ export type GPUWarningMessage = {
 export type Message =
   | ChatSendMessage
   | ChatOpenMessage
+  | ModelLoadRequestMessage
+  | ModelInspectMessage
   | ChatStopMessage
   | SettingsUpdateMessage
   | ContextClearMessage
@@ -131,7 +226,16 @@ export type Message =
   | AgentThinkingMessage
   | AgentToolCallMessage
   | ModelStatusMessage
+  | ModelInfoMessage
   | ModelSwitchMessage
+  | VoiceTranscribeMessage
+  | VoiceTranscriptMessage
+  | VoiceStatusMessage
+  | VoiceSpeakMessage
+  | VoiceAudioMessage
+  | VoiceAudioStopMessage
+  | VoiceStopMessage
+  | VoiceClearCacheMessage
   | AgentRunMessage
   | ModelLoadMessage
   | OffscreenToolExecuteMessage
